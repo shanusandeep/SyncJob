@@ -1,0 +1,18 @@
+# Build output
+bin/
+obj/
+
+# Publish output
+publish/
+*.user
+
+# Logs produced at runtime
+logs/
+
+# macOS
+.DS_Store
+
+# IDE
+.vs/
+.idea/
+*.suo

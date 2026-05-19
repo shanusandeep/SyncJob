@@ -1,0 +1,24 @@
+## .tfignore - TFVC (Team Foundation Version Control) ignore rules
+## Leading \ anchors to the repo root; # is a comment; ! re-includes.
+
+## Build output
+\bin
+\obj
+bin
+obj
+
+## Publish output
+\publish
+publish
+
+## Runtime logs
+\logs
+logs
+
+## Visual Studio / IDE
+\.vs
+*.user
+*.suo
+
+## macOS
+.DS_Store

@@ -68,6 +68,49 @@ public static class SqlBuilder
     public static string BuildStagedRowCount() => "SELECT COUNT(*) FROM #STG;";
 
     /// <summary>
+    /// Diagnostic query for one enabled FK on the target table. It returns a
+    /// small sample of staged child rows whose non-null FK values do not have a
+    /// matching parent row, so the log can identify the exact incoming data that
+    /// would make MERGE fail.
+    /// </summary>
+    public static string BuildForeignKeyDiagnosticQuery(
+        TableDefinition table,
+        ForeignKeyInfo fk,
+        int sampleRows)
+    {
+        var top = Math.Max(0, sampleRows).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var q = SqlText.BracketSqlServerIdentifier;
+        var pk = q(table.PrimaryKey);
+        var parentQualified = $"{q(fk.ParentSchema)}.{q(fk.ParentTable)}";
+
+        var selectColumns = new List<string>
+        {
+            $"TRY_CONVERT(nvarchar(4000), s.{pk}) AS {q(table.PrimaryKey)}"
+        };
+        selectColumns.AddRange(fk.Columns
+            .Where(c => !string.Equals(c.ChildColumn, table.PrimaryKey, StringComparison.OrdinalIgnoreCase))
+            .Select(c => $"TRY_CONVERT(nvarchar(4000), s.{q(c.ChildColumn)}) AS {q(c.ChildColumn)}"));
+
+        var join = string.Join(" AND ", fk.Columns.Select(c =>
+            $"p.{q(c.ParentColumn)} = s.{q(c.ChildColumn)}"));
+
+        // SQL Server does not enforce an FK when any child FK column is NULL.
+        var childColumnsPresent = string.Join(" AND ", fk.Columns.Select(c =>
+            $"s.{q(c.ChildColumn)} IS NOT NULL"));
+
+        var parentMissingCheck = $"p.{q(fk.Columns[0].ParentColumn)} IS NULL";
+
+        return
+            "SELECT TOP (" + top + ") " + string.Join(", ", selectColumns) + Environment.NewLine +
+            "FROM #STG AS s" + Environment.NewLine +
+            "LEFT JOIN " + parentQualified + " AS p" + Environment.NewLine +
+            "  ON " + join + Environment.NewLine +
+            "WHERE " + childColumnsPresent + Environment.NewLine +
+            "  AND " + parentMissingCheck + Environment.NewLine +
+            $"ORDER BY s.{pk};";
+    }
+
+    /// <summary>
     /// Step C (real run): change-only upsert. WHEN MATCHED fires only if at least
     /// one synced column actually differs (null-safe), so the safety-overlap
     /// re-pull does not churn unchanged rows. IDENTITY_INSERT is toggled only

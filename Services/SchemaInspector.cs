@@ -7,6 +7,14 @@ namespace SyncExamSubJob.Services;
 
 public sealed record StagedColumn(string Name, string TypeDefinition);
 
+public sealed record ForeignKeyColumnPair(string ChildColumn, string ParentColumn);
+
+public sealed record ForeignKeyInfo(
+    string ConstraintName,
+    string ParentSchema,
+    string ParentTable,
+    IReadOnlyList<ForeignKeyColumnPair> Columns);
+
 /// <summary>
 /// Reads SQL Server metadata so the staging temp table is built from the EXACT
 /// target column types (no hardcoded / guessed types, no SELECT * from the
@@ -100,6 +108,72 @@ SELECT CASE WHEN EXISTS (
         return Convert.ToInt32(cmd.ExecuteScalar(), CultureInfo.InvariantCulture) == 1;
     }
 
+    /// <summary>
+    /// Read enabled FK constraints where the synced target table is the child.
+    /// The staged #STG rows can then be checked before MERGE so FK failures log
+    /// useful key values instead of only the generic SQL Server constraint error.
+    /// </summary>
+    public IReadOnlyList<ForeignKeyInfo> GetForeignKeysForTable(string schema, string table)
+    {
+        const string sql = @"
+SELECT fk.name AS constraint_name,
+       ps.name AS parent_schema,
+       pt.name AS parent_table,
+       cc.name AS child_column,
+       pc.name AS parent_column,
+       fkc.constraint_column_id
+FROM sys.foreign_keys fk
+JOIN sys.tables ct ON ct.object_id = fk.parent_object_id
+JOIN sys.schemas cs ON cs.schema_id = ct.schema_id
+JOIN sys.tables pt ON pt.object_id = fk.referenced_object_id
+JOIN sys.schemas ps ON ps.schema_id = pt.schema_id
+JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
+JOIN sys.columns cc ON cc.object_id = fkc.parent_object_id
+                   AND cc.column_id = fkc.parent_column_id
+JOIN sys.columns pc ON pc.object_id = fkc.referenced_object_id
+                   AND pc.column_id = fkc.referenced_column_id
+WHERE cs.name = @schema
+  AND ct.name = @table
+  AND fk.is_disabled = 0
+ORDER BY fk.name, fkc.constraint_column_id;";
+
+        var grouped = new Dictionary<string, MutableForeignKey>(StringComparer.OrdinalIgnoreCase);
+
+        using (var conn = new SqlConnection(_connectionString))
+        {
+            conn.Open();
+            using var cmd = new SqlCommand(sql, conn) { CommandTimeout = _commandTimeout };
+            cmd.Parameters.AddWithValue("@schema", schema);
+            cmd.Parameters.AddWithValue("@table", table);
+
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                var constraint = r.GetString(0);
+                if (!grouped.TryGetValue(constraint, out var fk))
+                {
+                    fk = new MutableForeignKey(
+                        constraint,
+                        r.GetString(1),
+                        r.GetString(2));
+                    grouped.Add(constraint, fk);
+                }
+
+                fk.Columns.Add(new ForeignKeyColumnPair(
+                    r.GetString(3),
+                    r.GetString(4)));
+            }
+        }
+
+        return grouped.Values
+            .Select(fk => new ForeignKeyInfo(
+                fk.ConstraintName,
+                fk.ParentSchema,
+                fk.ParentTable,
+                fk.Columns))
+            .ToList();
+    }
+
     private static string BuildTypeDefinition(
         string dataType, int? charLen, int? precision, int? scale, int? dtPrecision,
         string? collation)
@@ -147,6 +221,21 @@ SELECT CASE WHEN EXISTS (
                 // smalldatetime, money, smallmoney, float, real,
                 // uniqueidentifier, etc. - no facets needed for staging.
                 return dataType;
+        }
+    }
+
+    private sealed class MutableForeignKey
+    {
+        public string ConstraintName { get; }
+        public string ParentSchema { get; }
+        public string ParentTable { get; }
+        public List<ForeignKeyColumnPair> Columns { get; } = new();
+
+        public MutableForeignKey(string constraintName, string parentSchema, string parentTable)
+        {
+            ConstraintName = constraintName;
+            ParentSchema = parentSchema;
+            ParentTable = parentTable;
         }
     }
 }

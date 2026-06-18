@@ -9,6 +9,10 @@ namespace SyncExamSubJob.Models;
 ///   - EMY_AREA_CDE (Oracle only)            -> simply omitted (not listed here)
 ///   - EMY_EMAIL (SQL Server only)           -> LiteralNull (insert NULL, never updated)
 ///   - SIGNATURE_FILE_LINK (Oracle)          -> Mapped to SQL EMY_SIGNATURE_FILE_LINK
+///   - EMY_ID                                -> Oracle column is a legacy VARCHAR
+///     (e.g. 'SCUMBO'), unused downstream. SQL Server EMY_ID is an INT IDENTITY
+///     surrogate. The two are unrelated, so Oracle.EMY_ID is NOT pulled, SQL
+///     EMY_ID is left to IDENTITY, and MERGE matches on EMY_CDE (natural key).
 /// </summary>
 public static class TableDefinitions
 {
@@ -24,14 +28,13 @@ public static class TableDefinitions
         name: "Employees",
         sqlTable: "Employees",
         oracleTable: "EMPLOYEES",
-        primaryKey: "EMY_ID",
+        primaryKey: "EMY_CDE",
         createDtmColumn: "EMY_CREATE_DTM",
         modifyDtmColumn: "EMY_MDFY_DTM",
         dependencies: Array.Empty<string>(),
         columns: new[]
         {
-            ColumnDef.Key("EMY_ID"),
-            ColumnDef.Col("EMY_CDE"),
+            ColumnDef.Key("EMY_CDE"),
             ColumnDef.Col("EMY_USERID"),
             ColumnDef.Col("EMY_EMSN_CDE"),
             ColumnDef.Col("EMY_PSTP_CDE"),

@@ -1,5 +1,6 @@
 using System.Data;
 using System.Globalization;
+using System.Text;
 using Microsoft.Data.SqlClient;
 using SyncExamSubJob.Configuration;
 using SyncExamSubJob.Logging;
@@ -48,9 +49,10 @@ public sealed class TableSyncService
 
         try
         {
+            var stagedColumnNames = table.StagingColumns.Select(c => c.SqlName).ToList();
             var stagedCols = _schema.GetStagedColumnDefinitions(
                 _config.TargetSchema, table.SqlTable,
-                table.StagingColumns.Select(c => c.SqlName).ToList());
+                stagedColumnNames);
 
             var pkIsIdentity = _schema.IsIdentityColumn(
                 _config.TargetSchema, table.SqlTable, table.PrimaryKey);
@@ -75,6 +77,11 @@ public sealed class TableSyncService
                 ExecNonQuery(conn, null, stagingSql);
 
                 rowsRead = ExecScalarInt(conn, null, SqlBuilder.BuildStagedRowCount());
+
+                ValidateStagedForeignKeys(
+                    conn,
+                    table,
+                    new HashSet<string>(stagedColumnNames, StringComparer.OrdinalIgnoreCase));
 
                 // Step C - upsert.
                 if (_config.DryRun)
@@ -160,6 +167,106 @@ public sealed class TableSyncService
         var ins = Convert.ToInt32(r["Inserted"], CultureInfo.InvariantCulture);
         var upd = Convert.ToInt32(r["Updated"], CultureInfo.InvariantCulture);
         return (ins, upd);
+    }
+
+    private void ValidateStagedForeignKeys(
+        SqlConnection conn,
+        TableDefinition table,
+        IReadOnlySet<string> stagedColumnNames)
+    {
+        if (_config.ForeignKeyDiagnosticSampleRows == 0)
+            return;
+
+        IReadOnlyList<ForeignKeyInfo> fks;
+        try
+        {
+            fks = _schema.GetForeignKeysForTable(_config.TargetSchema, table.SqlTable);
+        }
+        catch (Exception ex)
+        {
+            _log.Warn(
+                $"[{table.Name}] FK diagnostic metadata lookup failed; continuing to MERGE. " +
+                $"Reason: {ex.Message}");
+            return;
+        }
+        if (fks.Count == 0)
+            return;
+
+        var failures = new List<string>();
+
+        foreach (var fk in fks)
+        {
+            var missingStagedColumns = fk.Columns
+                .Where(c => !stagedColumnNames.Contains(c.ChildColumn))
+                .Select(c => c.ChildColumn)
+                .ToList();
+            if (missingStagedColumns.Count > 0)
+            {
+                _log.Warn(
+                    $"[{table.Name}] FK diagnostic skipped for {fk.ConstraintName}; " +
+                    $"child column(s) not staged: {string.Join(", ", missingStagedColumns)}");
+                continue;
+            }
+
+            var sql = SqlBuilder.BuildForeignKeyDiagnosticQuery(
+                table, fk, _config.ForeignKeyDiagnosticSampleRows);
+            List<string> samples;
+            try
+            {
+                samples = ReadDiagnosticRows(conn, sql);
+            }
+            catch (Exception ex)
+            {
+                _log.Warn(
+                    $"[{table.Name}] FK diagnostic query failed for {fk.ConstraintName}; " +
+                    $"continuing to MERGE. Reason: {ex.Message}");
+                continue;
+            }
+            if (samples.Count == 0)
+                continue;
+
+            failures.Add(fk.ConstraintName);
+            _log.Error(
+                $"[{table.Name}] FK validation failed before MERGE. " +
+                $"Constraint={fk.ConstraintName}; Child={_config.TargetSchema}.{table.SqlTable}; " +
+                $"Parent={fk.ParentSchema}.{fk.ParentTable}; " +
+                $"SampleRows={samples.Count}.");
+            _log.Error(
+                $"[{table.Name}] FK columns: " +
+                string.Join(", ", fk.Columns.Select(c => $"{c.ChildColumn}->{c.ParentColumn}")));
+
+            foreach (var sample in samples)
+                _log.Error($"[{table.Name}] Missing parent sample: {sample}");
+        }
+
+        if (failures.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"Pre-merge foreign key validation failed for {table.Name}. " +
+                $"Missing parent rows for constraint(s): {string.Join(", ", failures)}. " +
+                "See the log file for sample staged row values.");
+        }
+    }
+
+    private List<string> ReadDiagnosticRows(SqlConnection conn, string sql)
+    {
+        using var cmd = NewCommand(conn, null, sql);
+        using var r = cmd.ExecuteReader();
+        var rows = new List<string>();
+
+        while (r.Read())
+        {
+            var sb = new StringBuilder();
+            for (var i = 0; i < r.FieldCount; i++)
+            {
+                if (i > 0) sb.Append(", ");
+                sb.Append(r.GetName(i)).Append('=');
+                sb.Append(r.IsDBNull(i) ? "NULL" : Convert.ToString(r.GetValue(i), CultureInfo.InvariantCulture));
+            }
+            rows.Add(sb.ToString());
+        }
+
+        return rows;
     }
 
     private static void SafeRollback(SqlTransaction tx)

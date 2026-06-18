@@ -25,6 +25,7 @@ public sealed class SyncConfig
 
     public int SafetyOverlapMinutes { get; set; } = 30;
     public int CommandTimeoutSeconds { get; set; } = 1800;
+    public int ForeignKeyDiagnosticSampleRows { get; set; } = 50;
     public string LogDirectory { get; set; } = "logs";
     public bool DryRun { get; set; }
 
@@ -63,6 +64,8 @@ public sealed class SyncConfig
             throw new ConfigurationException("Sync:SafetyOverlapMinutes must be >= 0.");
         if (CommandTimeoutSeconds <= 0)
             throw new ConfigurationException("Sync:CommandTimeoutSeconds must be > 0.");
+        if (ForeignKeyDiagnosticSampleRows < 0)
+            throw new ConfigurationException("Sync:ForeignKeyDiagnosticSampleRows must be >= 0.");
         if (string.IsNullOrWhiteSpace(LogDirectory))
             throw new ConfigurationException("Sync:LogDirectory is required.");
     }

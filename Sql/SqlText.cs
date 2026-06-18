@@ -20,6 +20,14 @@ public static class SqlText
         innerOracleSql.Replace("'", "''");
 
     /// <summary>
+    /// Bracket-quote a SQL Server identifier that came from SQL Server metadata.
+    /// Metadata names are trusted as object names, but still need escaping because
+    /// they are not restricted to the config identifier whitelist.
+    /// </summary>
+    public static string BracketSqlServerIdentifier(string identifier) =>
+        "[" + identifier.Replace("]", "]]") + "]";
+
+    /// <summary>
     /// Render a SQL Server datetime as an Oracle date/timestamp literal. The
     /// form is the single point controlled by Sync:OracleDateLiteralMode so a
     /// DATE-vs-TIMESTAMP linked-server quirk is a config flip, not a code change.
